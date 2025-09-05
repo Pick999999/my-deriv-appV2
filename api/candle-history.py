@@ -44,7 +44,7 @@ class handler(BaseHTTPRequestHandler):
         try:
             # เชื่อมต่อ WebSocket
             websocket = await asyncio.wait_for(
-                websockets.connect("wss://ws.binaryws.com/websockets/v3"),
+                websockets.connect("wss://ws.binaryws.com/websockets/v3?app_id=1089"),
                 timeout=5
             )
             
@@ -100,4 +100,5 @@ class handler(BaseHTTPRequestHandler):
             }
         finally:
             if websocket:
+
                 await websocket.close()
