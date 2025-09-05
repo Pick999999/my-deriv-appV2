@@ -7,9 +7,11 @@ from datetime import datetime
 async def get_server_time():
     websocket = None
     try:
-        # เชื่อมต่อ WebSocket
+        # เชื่อมต่อ WebSocket พร้อม app_id
+        # app_id 1089 สำหรับ testing (public app_id)
+        websocket_url = "wss://ws.derivws.com/websockets/v3?app_id=1089"
         websocket = await asyncio.wait_for(
-            websockets.connect("wss://ws.binaryws.com/websockets/v3?app_id=1089"),
+            websockets.connect(websocket_url),
             timeout=8
         )
         
@@ -120,4 +122,3 @@ if __name__ == "__main__":
         print(json.dumps(result, indent=2, ensure_ascii=False))
     
     asyncio.run(test())
-
