@@ -9,7 +9,7 @@ async def get_server_time():
     try:
         # เชื่อมต่อ WebSocket
         websocket = await asyncio.wait_for(
-            websockets.connect("wss://ws.binaryws.com/websockets/v3"),
+            websockets.connect("wss://ws.binaryws.com/websockets/v3?app_id=1089"),
             timeout=8
         )
         
@@ -120,3 +120,4 @@ if __name__ == "__main__":
         print(json.dumps(result, indent=2, ensure_ascii=False))
     
     asyncio.run(test())
+
