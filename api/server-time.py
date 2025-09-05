@@ -1,32 +1,108 @@
 # api/server-time.py
 import json
-import asyncio
-import websockets
+import time
+import threading
 from datetime import datetime
+import websocket
+import queue
 
-async def get_server_time():
-    websocket = None
-    try:
-        # เชื่อมต่อ WebSocket พร้อม app_id
-        # app_id 1089 สำหรับ testing (public app_id)
-        websocket_url = "wss://ws.derivws.com/websockets/v3?app_id=1089"
-        websocket = await asyncio.wait_for(
-            websockets.connect(websocket_url),
-            timeout=8
-        )
+class DerivWebSocketClient:
+    def __init__(self):
+        self.ws_url = "wss://ws.derivws.com/websockets/v3?app_id=1089"
+        self.websocket = None
+        self.is_connected = False
+        self.response_queue = queue.Queue()
+        self.current_req_id = 1
         
-        # ขอเวลาจาก server
-        time_request = {
+    def on_open(self, ws):
+        """เมื่อ WebSocket เชื่อมต่อสำเร็จ"""
+        self.is_connected = True
+        
+    def on_message(self, ws, message):
+        """เมื่อได้รับ message จาก server"""
+        try:
+            data = json.loads(message)
+            self.response_queue.put(data)
+        except json.JSONDecodeError:
+            pass
+            
+    def on_error(self, ws, error):
+        """เมื่อเกิด error"""
+        self.response_queue.put({"error": str(error), "req_id": self.current_req_id})
+        
+    def on_close(self, ws, close_status_code, close_msg):
+        """เมื่อปิดการเชื่อมต่อ"""
+        self.is_connected = False
+        
+    def connect(self, timeout=8):
+        """เชื่อมต่อกับ Deriv WebSocket"""
+        try:
+            # สร้าง WebSocket connection
+            self.websocket = websocket.WebSocketApp(
+                self.ws_url,
+                on_open=self.on_open,
+                on_message=self.on_message,
+                on_error=self.on_error,
+                on_close=self.on_close
+            )
+            
+            # รัน WebSocket ใน thread แยก
+            ws_thread = threading.Thread(
+                target=self.websocket.run_forever,
+                daemon=True
+            )
+            ws_thread.start()
+            
+            # รอจนกว่าจะเชื่อมต่อสำเร็จ
+            start_time = time.time()
+            while not self.is_connected:
+                if time.time() - start_time > timeout:
+                    return False
+                time.sleep(0.1)
+                
+            return True
+            
+        except Exception as e:
+            return False
+    
+    def send_request(self, request_data, timeout=5):
+        """ส่ง request และรอ response"""
+        if not self.is_connected:
+            return None
+            
+        try:
+            # ตั้ง req_id
+            self.current_req_id = request_data.get('req_id', 1)
+            
+            # ส่ง request
+            self.websocket.send(json.dumps(request_data))
+            
+            # รอ response
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                try:
+                    response = self.response_queue.get(timeout=0.1)
+                    if response.get('req_id') == self.current_req_id:
+                        return response
+                except queue.Empty:
+                    continue
+                    
+            return {"error": "Response timeout"}
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def get_server_time(self):
+        """ดึงเวลาจาก server"""
+        request_data = {
             "time": 1,
             "req_id": 1
         }
         
-        await websocket.send(json.dumps(time_request))
-        response = await asyncio.wait_for(websocket.recv(), timeout=8)
-        data = json.loads(response)
+        response = self.send_request(request_data)
         
-        if "time" in data:
-            server_time = data["time"]
+        if response and "time" in response:
+            server_time = response["time"]
             
             # แปลงเป็นรูปแบบ hh:mm:ss
             dt = datetime.fromtimestamp(server_time)
@@ -42,36 +118,25 @@ async def get_server_time():
                 "server_time": server_time,
                 "formatted_time": formatted_time,
                 "seconds_to_next_minute": round(seconds_to_next_minute, 2),
-                "local_time": datetime.now().strftime("%H:%M:%S")
+                "local_time": datetime.now().strftime("%H:%M:%S"),
+                "method": "WEBSOCKET_CLIENT"
             }
         else:
             return {
                 "success": False,
-                "error": "Cannot get server time from response",
-                "raw_response": str(data)
+                "error": response.get("error", "Unknown error"),
+                "raw_response": str(response)
             }
-            
-    except asyncio.TimeoutError:
-        return {
-            "success": False,
-            "error": "WebSocket connection timeout"
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"Connection error: {str(e)}"
-        }
-    finally:
-        if websocket:
-            try:
-                await websocket.close()
-            except:
-                pass
+    
+    def close(self):
+        """ปิดการเชื่อมต่อ"""
+        if self.websocket:
+            self.websocket.close()
+            self.is_connected = False
 
-def handler(request, context):
+def handler(request, context=None):
     """Main handler for Vercel"""
     
-    # Set CORS headers
     headers = {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -79,20 +144,34 @@ def handler(request, context):
         'Content-Type': 'application/json'
     }
     
+    client = None
+    
     try:
-        # Handle preflight OPTIONS request
-        if request.get('httpMethod') == 'OPTIONS' or request.get('method') == 'OPTIONS':
+        # Handle preflight OPTIONS
+        method = request.get('httpMethod') or request.get('method', 'GET')
+        if method == 'OPTIONS':
             return {
                 'statusCode': 200,
                 'headers': headers,
-                'body': json.dumps({"message": "CORS preflight"})
+                'body': json.dumps({"message": "CORS OK"})
             }
         
-        # Run async function
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(get_server_time())
-        loop.close()
+        # สร้าง WebSocket client
+        client = DerivWebSocketClient()
+        
+        # เชื่อมต่อ
+        if not client.connect(timeout=6):
+            return {
+                'statusCode': 500,
+                'headers': headers,
+                'body': json.dumps({
+                    "success": False,
+                    "error": "Cannot connect to Deriv WebSocket"
+                })
+            }
+        
+        # ดึงเวลาจาก server
+        result = client.get_server_time()
         
         return {
             'statusCode': 200,
@@ -101,24 +180,26 @@ def handler(request, context):
         }
         
     except Exception as e:
-        error_result = {
-            "success": False,
-            "error": f"Handler error: {str(e)}",
-            "error_type": type(e).__name__
-        }
-        
         return {
             'statusCode': 500,
             'headers': headers,
-            'body': json.dumps(error_result)
+            'body': json.dumps({
+                "success": False,
+                "error": f"Handler error: {str(e)}",
+                "error_type": type(e).__name__
+            })
         }
+    finally:
+        # ปิดการเชื่อมต่อ
+        if client:
+            client.close()
 
 # สำหรับ local testing
 if __name__ == "__main__":
-    # Test locally
-    import asyncio
-    async def test():
-        result = await get_server_time()
+    client = DerivWebSocketClient()
+    if client.connect():
+        result = client.get_server_time()
         print(json.dumps(result, indent=2, ensure_ascii=False))
-    
-    asyncio.run(test())
+        client.close()
+    else:
+        print("Cannot connect to WebSocket")
