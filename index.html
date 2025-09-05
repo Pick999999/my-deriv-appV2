@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deriv WebSocket on Vercel</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .btn {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+            transition: background 0.3s;
+        }
+        .btn:hover {
+            background: #0056b3;
+        }
+        .btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .result {
+            background: #f8f9fa;
+            border-left: 4px solid #007bff;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 0 6px 6px 0;
+        }
+        .time-display {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+            text-align: center;
+            margin: 20px 0;
+        }
+        .countdown {
+            font-size: 18px;
+            color: #28a745;
+            text-align: center;
+        }
+        .candle-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        .candle-table th, .candle-table td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: center;
+        }
+        .candle-table th {
+            background-color: #007bff;
+            color: white;
+        }
+        .loading {
+            text-align: center;
+            font-style: italic;
+            color: #6c757d;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            border-left: 4px solid #dc3545;
+            padding: 15px;
+            border-radius: 0 6px 6px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Deriv WebSocket on Vercel</h1>
+        <p>ทดสอบการเชื่อมต่อกับ Deriv.com API ผ่าน Vercel Serverless Functions</p>
+        
+        <div>
+            <button class="btn" onclick="getServerTime()" id="timeBtn">🕐 ดึงเวลาจาก Server</button>
+            <button class="btn" onclick="getCandleHistory()" id="candleBtn">📊 ดึง Candle History</button>
+            <button class="btn" onclick="autoSync()" id="autoBtn">🔄 Auto Sync (ทุกนาที)</button>
+            <button class="btn" onclick="stopAutoSync()" id="stopBtn" disabled>⏹️ หยุด Auto Sync</button>
+        </div>
+
+        <div id="timeResult"></div>
+        <div id="candleResult"></div>
+    </div>
+
+    <script>
+        let autoSyncInterval = null;
+        let countdownInterval = null;
+
+        async function getServerTime() {
+            const btn = document.getElementById('timeBtn');
+            btn.disabled = true;
+            btn.textContent = '🔄 กำลังดึงข้อมูล...';
+            
+            try {
+                const response = await fetch('/api/server-time');
+                const data = await response.json();
+                
+                if (data.success) {
+                    const timeDisplay = `
+                        <div class="time-display">
+                            เวลาจาก Server: ${data.formatted_time}
+                        </div>
+                        <div class="countdown">
+                            เหลืออีก ${data.seconds_to_next_minute} วินาที จะถึงวินาที 0
+                        </div>
+                        <div class="result">
+                            <strong>รายละเอียด:</strong><br>
+                            Server Timestamp: ${data.server_time}<br>
+                            เวลาท้องถิ่น: ${data.local_time}<br>
+                            เวลาที่ต้องรอ: ${data.seconds_to_next_minute} วินาที
+                        </div>
+                    `;
+                    document.getElementById('timeResult').innerHTML = timeDisplay;
+                    
+                    // เริ่ม countdown
+                    startCountdown(data.seconds_to_next_minute);
+                } else {
+                    document.getElementById('timeResult').innerHTML = 
+                        `<div class="error">❌ เกิดข้อผิดพลาด: ${data.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('timeResult').innerHTML = 
+                    `<div class="error">❌ ไม่สามารถเชื่อมต่อได้: ${error.message}</div>`;
+            }
+            
+            btn.disabled = false;
+            btn.textContent = '🕐 ดึงเวลาจาก Server';
+        }
+
+        function startCountdown(seconds) {
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+            }
+            
+            let remaining = seconds;
+            countdownInterval = setInterval(() => {
+                remaining--;
+                if (remaining <= 0) {
+                    clearInterval(countdownInterval);
+                    document.querySelector('.countdown').innerHTML = 
+                        '<strong style="color: #28a745;">🎯 ถึงวินาที 0 แล้ว!</strong>';
+                    // ดึง candle history อัตโนมัติ
+                    getCandleHistory();
+                } else {
+                    document.querySelector('.countdown').textContent = 
+                        `เหลืออีก ${remaining.toFixed(1)} วินาที จะถึงวินาที 0`;
+                }
+            }, 100);
+        }
+
+        async function getCandleHistory(symbol = 'R_50', count = 10) {
+            const btn = document.getElementById('candleBtn');
+            btn.disabled = true;
+            btn.textContent = '🔄 กำลังดึงข้อมูล...';
+            
+            try {
+                const response = await fetch(`/api/candle-history?symbol=${symbol}&count=${count}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    let tableHTML = `
+                        <div class="result">
+                            <h3>📊 Candle History - ${data.symbol}</h3>
+                            <p>จำนวน: ${data.count} candles</p>
+                            <table class="candle-table">
+                                <thead>
+                                    <tr>
+                                        <th>เวลา</th>
+                                        <th>Open</th>
+                                        <th>High</th>
+                                        <th>Low</th>
+                                        <th>Close</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                    `;
+                    
+                    data.candles.slice(-5).forEach(candle => {
+                        tableHTML += `
+                            <tr>
+                                <td>${candle.time}</td>
+                                <td>${candle.open}</td>
+                                <td>${candle.high}</td>
+                                <td>${candle.low}</td>
+                                <td>${candle.close}</td>
+                            </tr>
+                        `;
+                    });
+                    
+                    tableHTML += `
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                    
+                    document.getElementById('candleResult').innerHTML = tableHTML;
+                } else {
+                    document.getElementById('candleResult').innerHTML = 
+                        `<div class="error">❌ เกิดข้อผิดพลาด: ${data.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('candleResult').innerHTML = 
+                    `<div class="error">❌ ไม่สามารถเชื่อมต่อได้: ${error.message}</div>`;
+            }
+            
+            btn.disabled = false;
+            btn.textContent = '📊 ดึง Candle History';
+        }
+
+        function autoSync() {
+            if (autoSyncInterval) return;
+            
+            const autoBtn = document.getElementById('autoBtn');
+            const stopBtn = document.getElementById('stopBtn');
+            
+            autoBtn.disabled = true;
+            stopBtn.disabled = false;
+            
+            // เรียกครั้งแรก
+            getServerTime();
+            
+            // ตั้งเวลาเรียกทุกนาที
+            autoSyncInterval = setInterval(() => {
+                getServerTime();
+            }, 60000);
+            
+            console.log('เริ่ม Auto Sync ทุก 60 วินาที');
+        }
+
+        function stopAutoSync() {
+            if (autoSyncInterval) {
+                clearInterval(autoSyncInterval);
+                autoSyncInterval = null;
+            }
+            
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+                countdownInterval = null;
+            }
+            
+            const autoBtn = document.getElementById('autoBtn');
+            const stopBtn = document.getElementById('stopBtn');
+            
+            autoBtn.disabled = false;
+            stopBtn.disabled = true;
+            
+            console.log('หยุด Auto Sync แล้ว');
+        }
+    </script>
+</body>
+</html>
